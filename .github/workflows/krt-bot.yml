@@ -1,1 +1,48 @@
+name: KRT bot
 
+# КОГДА запускать
+on:
+  workflow_dispatch:          # кнопка «запустить вручную» в разделе Actions
+  schedule:
+    # Время в UTC. Москва = UTC+3.
+    # 07:00 UTC = 10:00 МСК,  15:00 UTC = 18:00 МСК
+    - cron: '0 7,15 * * *'
+
+# Разрешаем боту сохранять память (seen.json) обратно в репозиторий
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Берём код из репозитория
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Ставим Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 3. Ставим библиотеки
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # 4. Запускаем бота (секреты берутся из настроек репозитория)
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL:   ${{ secrets.TELEGRAM_CHANNEL }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python krt_bot.py
+
+      # 5. Сохраняем память о том, что уже постили
+      - name: Save memory
+        run: |
+          git config user.name  "krt-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add seen.json || true
+          git commit -m "update seen.json" || echo "нечего сохранять"
+          git push || echo "пуш не понадобился"

@@ -38,10 +38,12 @@ ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")   # ключ Claude API
 # False = старое поведение: публикует в канал сразу.
 REVIEW_MODE = True
 
-# Твой личный chat_id (куда бот шлёт черновики на проверку).
-# Узнать: напиши своему боту любое сообщение, потом открой в браузере
-# https://api.telegram.org/bot<ТОКЕН>/getUpdates — там будет "chat":{"id": ...}.
-# Или перешли любой свой пост боту @userinfobot — он покажет твой id.
+# Куда бот шлёт черновики на проверку. Можно указать:
+#   • @имя_канала или @имя_группы — ПУБЛИЧНЫЙ чат, где бот сделан АДМИНОМ;
+#   • либо числовой id твоей лички (если хочешь получать черновики в личку).
+# Реакция в этом чате на черновик = команда «публикуем в основной канал».
+# Узнать числовой id лички: напиши боту, открой
+# https://api.telegram.org/bot<ТОКЕН>/getUpdates и найди "chat":{"id": ...}.
 REVIEW_CHAT_ID = os.environ.get("REVIEW_CHAT_ID")
 
 # Модель Claude. Haiku — дёшево и быстро для коротких постов.
@@ -273,22 +275,32 @@ def send_message(chat_id, text: str) -> dict:
 def get_reaction_approvals(offset: int) -> tuple:
     """Читает свежие реакции из Telegram.
     Возвращает (множество одобренных message_id, новый offset).
-    Одобрение = на сообщение бота поставили ЛЮБУЮ реакцию."""
+    Одобрение = на сообщение бота поставили ЛЮБУЮ реакцию.
+
+    Учитываем два случая:
+      • личка/группа — реакция именная (message_reaction);
+      • канал — реакции анонимные, приходит только счётчик (message_reaction_count)."""
     data = tg_api("getUpdates", {
         "offset": offset,
         "timeout": 0,
-        "allowed_updates": ["message_reaction"],  # реакции по умолчанию выключены!
+        # оба типа по умолчанию выключены — включаем явно
+        "allowed_updates": ["message_reaction", "message_reaction_count"],
     })
     approved = set()
     new_offset = offset
     for upd in data.get("result", []):
         new_offset = upd["update_id"] + 1
-        reaction = upd.get("message_reaction")
-        if not reaction:
-            continue
-        # new_reaction непустой = реакцию поставили (а не сняли)
-        if reaction.get("new_reaction"):
-            approved.add(reaction["message_id"])
+
+        # 1) личка или группа: видно, что реакцию поставили (а не сняли)
+        r = upd.get("message_reaction")
+        if r and r.get("new_reaction"):
+            approved.add(r["message_id"])
+
+        # 2) канал: анонимный счётчик — одобряем, если есть хоть одна реакция
+        rc = upd.get("message_reaction_count")
+        if rc and any(x.get("total_count", 0) > 0 for x in rc.get("reactions", [])):
+            approved.add(rc["message_id"])
+
     return approved, new_offset
 
 # ----------------------------------------------------------------------------
@@ -383,3 +395,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

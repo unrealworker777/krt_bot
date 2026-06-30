@@ -20,6 +20,7 @@ import urllib.parse
 
 import requests
 import feedparser
+from bs4 import BeautifulSoup
 from anthropic import Anthropic
 
 # ----------------------------------------------------------------------------
@@ -32,6 +33,17 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]      # токен от @Bo
 TELEGRAM_CHANNEL   = os.environ["TELEGRAM_CHANNEL"]        # напр. "@my_krt_channel"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")   # ключ Claude API
 
+# Режим проверки. True = бот сначала шлёт черновик ТЕБЕ в личку,
+# и публикует в канал только после того, как ты поставишь реакцию.
+# False = старое поведение: публикует в канал сразу.
+REVIEW_MODE = True
+
+# Твой личный chat_id (куда бот шлёт черновики на проверку).
+# Узнать: напиши своему боту любое сообщение, потом открой в браузере
+# https://api.telegram.org/bot<ТОКЕН>/getUpdates — там будет "chat":{"id": ...}.
+# Или перешли любой свой пост боту @userinfobot — он покажет твой id.
+REVIEW_CHAT_ID = os.environ.get("REVIEW_CHAT_ID")
+
 # Модель Claude. Haiku — дёшево и быстро для коротких постов.
 # Хочешь текст «покрасивее» — поставь "claude-sonnet-4-6".
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
@@ -41,6 +53,12 @@ MAX_POSTS_PER_RUN = 3
 
 # Файл-память: тут храним ссылки, которые уже опубликовали.
 SEEN_FILE = "seen.json"
+
+# Очередь черновиков, ждущих твоей реакции: {message_id: текст поста}.
+PENDING_FILE = "pending.json"
+
+# Служебное состояние (offset для чтения реакций из Telegram).
+STATE_FILE = "state.json"
 
 # Голос/стиль канала. Меняй под себя — это и есть «характер» постов.
 CHANNEL_VOICE = (
@@ -62,12 +80,30 @@ def google_news_rss(query: str) -> str:
     return f"https://news.google.com/rss/search?q={q}&hl=ru&gl=RU&ceid=RU:ru"
 
 SOURCES = [
+    # --- Новости (вся пресса) ---
     google_news_rss('КРТ "комплексное развитие территорий"'),
     google_news_rss('"комплексное развитие территорий" застройщик'),
     google_news_rss('договор КРТ торги застройка'),
+
+    # --- Дзен --- (берём через Google News фильтром по сайту dzen.ru)
+    google_news_rss('КРТ "комплексное развитие территорий" site:dzen.ru'),
+
     # Сюда же можно добавить прямые RSS отраслевых порталов, например:
     # "https://ancb.ru/rss",   # проверь, что лента реально существует
 ]
+
+# --- Телеграм-каналы по КРТ ---
+# Просто имена публичных каналов БЕЗ символа @ (как в ссылке t.me/...).
+# Бот читает их веб-витрину t.me/s/<имя> — доступ/админка не нужны.
+# Впиши сюда реальные каналы, за которыми хочешь следить:
+TELEGRAM_SOURCES = [
+    # "expert_developer",
+    # "krt_russia",
+]
+
+# Слова-маркеры: пост из телеграм-канала берём, только если он про КРТ
+# (каналы часто пишут и на другие темы — так отсекаем лишнее).
+KEYWORDS = ["крт", "комплексное развитие территор"]
 
 # ----------------------------------------------------------------------------
 # 3. ПАМЯТЬ (дедупликация)
@@ -85,6 +121,20 @@ def save_seen(seen: set) -> None:
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, ensure_ascii=False, indent=2)
 
+
+def load_json(path: str, default):
+    """Универсальная загрузка JSON-файла с запасным значением."""
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return default
+
+
+def save_json(path: str, data) -> None:
+    """Универсальное сохранение JSON-файла."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 def news_id(entry) -> str:
     """Уникальный отпечаток новости — по ссылке (или заголовку, если ссылки нет)."""
     key = entry.get("link") or entry.get("title", "")
@@ -93,6 +143,39 @@ def news_id(entry) -> str:
 # ----------------------------------------------------------------------------
 # 4. СБОР НОВОСТЕЙ
 # ----------------------------------------------------------------------------
+
+def read_telegram_channel(username: str) -> list:
+    """Читает последние посты публичного телеграм-канала через его веб-витрину
+    t.me/s/<username>. Никакого доступа/админки не нужно — это открытая страница."""
+    items = []
+    url = f"https://t.me/s/{username}"
+    try:
+        html = requests.get(
+            url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
+        ).text
+    except Exception as e:
+        print(f"  Не смог прочитать @{username}: {e}")
+        return items
+
+    soup = BeautifulSoup(html, "html.parser")
+    for msg in soup.select(".tgme_widget_message_wrap"):
+        text_el = msg.select_one(".tgme_widget_message_text")
+        link_el = msg.select_one("a.tgme_widget_message_date")
+        if not text_el:
+            continue
+        text = text_el.get_text("\n", strip=True)
+        # Берём только посты, где реально речь про КРТ.
+        if not any(k in text.lower() for k in KEYWORDS):
+            continue
+        link = link_el["href"] if (link_el and link_el.has_attr("href")) else url
+        items.append({
+            "title": text.split("\n")[0][:120],   # первая строка как заголовок
+            "summary": text[:1500],
+            "link": link,
+            "source": f"Telegram @{username}",
+        })
+    return items
+
 
 def collect_news(seen: set) -> list:
     """Читает все источники и возвращает список НОВЫХ новостей."""
@@ -110,6 +193,16 @@ def collect_news(seen: set) -> list:
                 "link": entry.get("link", "").strip(),
                 "source": entry.get("source", {}).get("title", ""),
             })
+
+    # --- Телеграм-каналы (веб-витрина t.me/s/...) ---
+    for username in TELEGRAM_SOURCES:
+        for tg in read_telegram_channel(username):
+            nid = news_id(tg)
+            if nid in seen:
+                continue
+            tg["id"] = nid
+            fresh.append(tg)
+
     # Чем меньше дублей по заголовку, тем лучше — оставим уникальные заголовки
     unique = {}
     for item in fresh:
@@ -154,48 +247,139 @@ def make_post(item: dict) -> str:
     return msg.content[0].text.strip()
 
 # ----------------------------------------------------------------------------
-# 6. ПУБЛИКАЦИЯ в Telegram
+# 6. ОБЩЕНИЕ С TELEGRAM
 # ----------------------------------------------------------------------------
 
-def send_to_telegram(text: str) -> dict:
-    """Отправляет готовый пост в канал. Бот должен быть админом канала."""
-    api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    resp = requests.post(api, json={
-        "chat_id": TELEGRAM_CHANNEL,
+def tg_api(method: str, payload: dict) -> dict:
+    """Базовый вызов любого метода Telegram Bot API."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    resp = requests.post(url, json=payload, timeout=60)
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram вернул ошибку ({method}): {data}")
+    return data
+
+
+def send_message(chat_id, text: str) -> dict:
+    """Отправляет сообщение в указанный чат (канал или личку). Возвращает ответ."""
+    return tg_api("sendMessage", {
+        "chat_id": chat_id,
         "text": text[:4096],            # лимит Telegram на длину сообщения
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
-    }, timeout=30)
-    data = resp.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram вернул ошибку: {data}")
-    return data
+    })
+
+
+def get_reaction_approvals(offset: int) -> tuple:
+    """Читает свежие реакции из Telegram.
+    Возвращает (множество одобренных message_id, новый offset).
+    Одобрение = на сообщение бота поставили ЛЮБУЮ реакцию."""
+    data = tg_api("getUpdates", {
+        "offset": offset,
+        "timeout": 0,
+        "allowed_updates": ["message_reaction"],  # реакции по умолчанию выключены!
+    })
+    approved = set()
+    new_offset = offset
+    for upd in data.get("result", []):
+        new_offset = upd["update_id"] + 1
+        reaction = upd.get("message_reaction")
+        if not reaction:
+            continue
+        # new_reaction непустой = реакцию поставили (а не сняли)
+        if reaction.get("new_reaction"):
+            approved.add(reaction["message_id"])
+    return approved, new_offset
 
 # ----------------------------------------------------------------------------
-# 7. ГЛАВНАЯ ФУНКЦИЯ — связывает всё вместе
+# 7. ГЛАВНАЯ ЛОГИКА
 # ----------------------------------------------------------------------------
 
-def main():
-    seen = load_seen()
+def publish_approved():
+    """ТАКТ 1: проверяем, что ты одобрил реакцией, и публикуем это в канал."""
+    pending = load_json(PENDING_FILE, {})     # {message_id(строка): текст поста}
+    state = load_json(STATE_FILE, {"offset": 0})
+    if not pending:
+        return  # нечего проверять
+
+    approved_ids, new_offset = get_reaction_approvals(state.get("offset", 0))
+    state["offset"] = new_offset
+    save_json(STATE_FILE, state)
+
+    published = 0
+    for mid in list(approved_ids):
+        text = pending.get(str(mid))
+        if not text:
+            continue  # реакция на что-то не из очереди — игнор
+        try:
+            send_message(TELEGRAM_CHANNEL, text)
+            del pending[str(mid)]
+            published += 1
+            print(f"✓ Одобрено и опубликовано в канал (msg {mid})")
+            time.sleep(3)
+        except Exception as e:
+            print(f"✗ Не смог опубликовать (msg {mid}): {e}")
+
+    save_json(PENDING_FILE, pending)
+    if published:
+        print(f"Опубликовано одобренных постов: {published}")
+
+
+def queue_drafts(seen: set):
+    """ТАКТ 2: собираем свежие новости и шлём черновики ТЕБЕ на проверку."""
+    pending = load_json(PENDING_FILE, {})
     news = collect_news(seen)
-    print(f"Найдено новых новостей: {len(news)}")
+    print(f"Найдено новых материалов: {len(news)}")
 
-    posted = 0
+    sent = 0
     for item in news:
-        if posted >= MAX_POSTS_PER_RUN:
+        if sent >= MAX_POSTS_PER_RUN:
             break
         try:
             post_text = make_post(item)
-            send_to_telegram(post_text)
-            seen.add(item["id"])
-            posted += 1
-            print(f"✓ Опубликовано: {item['title'][:60]}")
-            time.sleep(3)  # маленькая пауза между постами
+            # шлём черновик в личку на проверку и запоминаем id сообщения
+            resp = send_message(REVIEW_CHAT_ID, "🔎 ЧЕРНОВИК (поставь реакцию = публикуем)\n\n" + post_text)
+            mid = resp["result"]["message_id"]
+            pending[str(mid)] = post_text          # храним чистый текст для канала
+            seen.add(item["id"])                   # больше этот материал не берём
+            sent += 1
+            print(f"→ Черновик отправлен на проверку: {item['title'][:60]}")
+            time.sleep(2)
         except Exception as e:
             print(f"✗ Пропустил «{item['title'][:40]}»: {e}")
 
+    save_json(PENDING_FILE, pending)
     save_seen(seen)
-    print(f"Готово. Опубликовано постов: {posted}")
+    print(f"Отправлено черновиков: {sent}")
+
+
+def main():
+    seen = load_seen()
+
+    if REVIEW_MODE:
+        if not REVIEW_CHAT_ID:
+            raise SystemExit("Не задан REVIEW_CHAT_ID — некуда слать черновики на проверку.")
+        publish_approved()   # сначала публикуем то, что ты уже одобрил
+        queue_drafts(seen)   # потом шлём новые черновики
+    else:
+        # Прямой режим без проверки (как раньше): сразу в канал.
+        news = collect_news(seen)
+        print(f"Найдено новых материалов: {len(news)}")
+        posted = 0
+        for item in news:
+            if posted >= MAX_POSTS_PER_RUN:
+                break
+            try:
+                send_message(TELEGRAM_CHANNEL, make_post(item))
+                seen.add(item["id"])
+                posted += 1
+                print(f"✓ Опубликовано: {item['title'][:60]}")
+                time.sleep(3)
+            except Exception as e:
+                print(f"✗ Пропустил «{item['title'][:40]}»: {e}")
+        save_seen(seen)
+        print(f"Готово. Опубликовано постов: {posted}")
+
 
 if __name__ == "__main__":
     main()

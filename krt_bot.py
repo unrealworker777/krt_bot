@@ -288,8 +288,14 @@ def get_reaction_approvals(offset: int) -> tuple:
     })
     approved = set()
     new_offset = offset
-    for upd in data.get("result", []):
+    result = data.get("result", [])
+    print(f"[проверка] Telegram вернул обновлений: {len(result)}")
+    for upd in result:
         new_offset = upd["update_id"] + 1
+        # какой тип пришёл — полезно видеть в логе
+        kinds = [k for k in ("message_reaction", "message_reaction_count") if upd.get(k)]
+        if kinds:
+            print(f"[проверка]   обновление {upd['update_id']}: {', '.join(kinds)}")
 
         # 1) личка или группа: видно, что реакцию поставили (а не сняли)
         r = upd.get("message_reaction")
@@ -311,10 +317,17 @@ def publish_approved():
     """ТАКТ 1: проверяем, что ты одобрил реакцией, и публикуем это в канал."""
     pending = load_json(PENDING_FILE, {})     # {message_id(строка): текст поста}
     state = load_json(STATE_FILE, {"offset": 0})
+
+    print(f"[проверка] В очереди на одобрение: {len(pending)} шт. (offset={state.get('offset', 0)})")
     if not pending:
+        print("[проверка] Очередь пуста — публиковать нечего.")
+        print("[проверка] Если ты УЖЕ ставил реакции, а очередь пуста — значит между")
+        print("[проверка] запусками не сохраняется pending.json (нет прав на запись в репозиторий).")
         return  # нечего проверять
 
     approved_ids, new_offset = get_reaction_approvals(state.get("offset", 0))
+    print(f"[проверка] Жду реакций на message_id: {sorted(int(k) for k in pending)}")
+    print(f"[проверка] Одобрено реакциями message_id: {sorted(approved_ids) or '— (реакций не видно)'}")
     state["offset"] = new_offset
     save_json(STATE_FILE, state)
 
@@ -395,4 +408,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -43,14 +43,21 @@ jobs:
         run: |
           git config user.name "krt-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add seen.json pending.json state.json 2>/dev/null || true
-          echo "--- что изменилось ---"
-          git status --short
-          git commit -m "Обновление состояния бота [skip ci]" && echo "✓ Коммит создан" || echo "Коммитить нечего"
-          if git push; then
-            echo "✓ Состояние сохранено в репозиторий (pending.json обновлён)"
+          # Добавляем КАЖДЫЙ файл отдельно: если какого-то ещё нет,
+          # это не должно мешать сохранить остальные.
+          git add seen.json 2>/dev/null || true
+          git add pending.json 2>/dev/null || true
+          git add state.json 2>/dev/null || true
+          echo "--- будет сохранено ---"
+          git diff --cached --name-only
+          if git commit -m "Обновление состояния бота [skip ci]"; then
+            if git push; then
+              echo "✓ Состояние сохранено в репозиторий (pending.json/seen.json/state.json)"
+            else
+              echo "✗✗✗ ПУШ НЕ УДАЛСЯ. Нет прав на запись:"
+              echo "    Settings → Actions → General → Workflow permissions → Read and write → Save"
+              exit 1
+            fi
           else
-            echo "✗✗✗ ПУШ НЕ УДАЛСЯ. Скорее всего нет прав на запись:"
-            echo "    Settings → Actions → General → Workflow permissions → Read and write → Save"
-            exit 1
+            echo "Нечего сохранять (изменений нет)"
           fi

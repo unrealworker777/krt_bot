@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Забрать код из репозитория
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Поставить Python
         uses: actions/setup-python@v5
@@ -51,13 +53,18 @@ jobs:
           echo "--- будет сохранено ---"
           git diff --cached --name-only
           if git commit -m "Обновление состояния бота [skip ci]"; then
-            if git push; then
-              echo "✓ Состояние сохранено в репозиторий (pending.json/seen.json/state.json)"
-            else
-              echo "✗✗✗ ПУШ НЕ УДАЛСЯ. Нет прав на запись:"
-              echo "    Settings → Actions → General → Workflow permissions → Read and write → Save"
-              exit 1
-            fi
+            # Репозиторий мог уйти вперёд (напр. прошлый запуск уже что-то сохранил).
+            # Подтягиваем свежее и пушим; при своих правках state-файлов оставляем наши.
+            for i in 1 2 3; do
+              if git pull --rebase -X ours --autostash origin main && git push; then
+                echo "✓ Состояние сохранено в репозиторий"
+                exit 0
+              fi
+              echo "Репозиторий обновился, повтор попытки $i..."
+              sleep 3
+            done
+            echo "✗ Не удалось сохранить состояние после нескольких попыток."
+            exit 1
           else
             echo "Нечего сохранять (изменений нет)"
           fi

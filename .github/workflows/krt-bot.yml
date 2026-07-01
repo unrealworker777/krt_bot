@@ -1,3 +1,6 @@
+# Инструкция для GitHub Actions: запускать бота по расписанию.
+# Путь в репозитории: .github/workflows/krt-bot.yml
+
 name: KRT bot
 
 on:
@@ -40,6 +43,14 @@ jobs:
         run: |
           git config user.name "krt-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add seen.json pending.json state.json || true
-          git commit -m "Обновление seen.json [skip ci]" || echo "Нечего коммитить"
-          git push || echo "Нечего пушить"
+          git add seen.json pending.json state.json 2>/dev/null || true
+          echo "--- что изменилось ---"
+          git status --short
+          git commit -m "Обновление состояния бота [skip ci]" && echo "✓ Коммит создан" || echo "Коммитить нечего"
+          if git push; then
+            echo "✓ Состояние сохранено в репозиторий (pending.json обновлён)"
+          else
+            echo "✗✗✗ ПУШ НЕ УДАЛСЯ. Скорее всего нет прав на запись:"
+            echo "    Settings → Actions → General → Workflow permissions → Read and write → Save"
+            exit 1
+          fi

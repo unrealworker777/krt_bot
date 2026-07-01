@@ -126,6 +126,16 @@ FOOTER = (
     '@Porotckii_lab'
 )
 
+
+def ensure_footer(text: str) -> str:
+    """СТРАЖ ФУТЕРА: гарантирует, что под постом обязательно стоит футер IPM
+    (ровно один раз). Через эту функцию проходит любой пост перед публикацией —
+    ни один пост не может уйти в канал без футера."""
+    text = (text or "").rstrip()
+    if "t.me/expert_developer" in text and "@Porotckii_lab" in text:
+        return text                    # футер уже есть — не дублируем
+    return text + "\n\n" + FOOTER      # футера нет — добавляем принудительно
+
 # ----------------------------------------------------------------------------
 # 2. ИСТОЧНИКИ
 #    Самый надёжный универсальный источник — RSS-поиск Google News по слову.
@@ -568,7 +578,7 @@ def publish_approved():
                 data["title"], data["source"], data["variant"],
                 data.get("image_url") or None,
             )
-            send_photo(TELEGRAM_CHANNEL, cover, data["text"])
+            send_photo(TELEGRAM_CHANNEL, cover, ensure_footer(data["text"]))
 
             # убираем ВСЕ черновики этого материала (оба варианта обложки)
             grp = data.get("group")
@@ -649,7 +659,7 @@ def main():
                 break
             try:
                 cover = make_cover(item["title"], item["source"], "design", item.get("image_url"))
-                send_photo(TELEGRAM_CHANNEL, cover, make_post(item))
+                send_photo(TELEGRAM_CHANNEL, cover, ensure_footer(make_post(item)))
                 seen.add(item["id"])
                 posted += 1
                 print(f"✓ Опубликовано: {item['title'][:60]}")

@@ -309,6 +309,21 @@ def collect_news(seen: set) -> list:
 # 5. ТЕКСТ ПОСТА через Claude
 # ----------------------------------------------------------------------------
 
+def _fit_body(body: str, reserve: int) -> str:
+    """Страховка по длине: пост уходит ОТДЕЛЬНЫМ сообщением (лимит Telegram 4096).
+    Если вдруг длиннее — режем по границе предложения, футер сохраняем."""
+    budget = 4096 - reserve
+    if len(body) <= budget:
+        return body
+    cut = body[:budget].rstrip()
+    for sep in (". ", "! ", "? ", ".\n", "\n"):
+        i = cut.rfind(sep)
+        if i > budget * 0.5:
+            return cut[:i + 1].rstrip()
+    i = cut.rfind(" ")
+    return (cut[:i] if i > 0 else cut).rstrip() + "…"
+
+
 def make_post(item: dict) -> str:
     """Превращает сырую новость в пост в голосе IPM | LAB.
     Футер и ссылку на источник добавляет сам код — модель их не пишет."""
@@ -324,16 +339,17 @@ def make_post(item: dict) -> str:
 
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    prompt = f"""Режим «Посты». Напиши пост для канала IPM | LAB по этой новости.
+    prompt = f"""Режим «Посты». Напиши РАЗВЁРНУТЫЙ пост для канала IPM | LAB по этой новости — от лица Константина Пороцкого, с его личным экспертным комментарием.
 
 Заголовок новости: {item['title']}
 Краткое описание: {item['summary']}
 
 Как писать:
-- Тип поста — ЭКСПЕРТНЫЙ (с короткой личной ноткой), в голосе Константина.
-- Структура: цепляющий заголовок → короткий зачин → 2–3 мысли, почему это важно застройщику/инвестору в контексте КРТ → финал-вопрос к аудитории.
-- ГЛАВНОЕ ПРО ФАКТЫ: опирайся ТОЛЬКО на заголовок и описание выше. НЕ выдумывай цифры, имена, детали и «личные истории» про эту конкретную новость. Можно давать общий экспертный взгляд девелопера, но без вымышленных фактов именно про это событие.
-- Объём — до 700 знаков (пост уйдёт подписью к картинке, лимит жёсткий).
+- Тип поста — ЭКСПЕРТНЫЙ, с личным авторским комментарием Константина. Это не пересказ новости, а его взгляд на неё.
+- Структура: цепляющий заголовок → зачин (почему это вообще важно) → 3–4 развёрнутые мысли через опыт девелопера, что это значит для застройщика/инвестора в контексте КРТ → финал-вопрос к аудитории.
+- Это должен быть именно КОММЕНТАРИЙ эксперта: оценка, что хорошо/плохо, на что обратить внимание, к чему это ведёт на рынке.
+- ЧЕСТНОСТЬ ПО ФАКТАМ: мнение, оценка и общий опыт («за годы работы я вижу, что…») — можно и нужно. Но НЕ выдумывай конкретные факты, цифры, имена и «истории клиента» именно про это событие, если их нет в описании выше.
+- Объём — развёрнутый, примерно 1500–2800 знаков. Живой язык, короткие абзацы, воздух между ними.
 - Форматирование — только теги <b> и <i>. Без хэштегов.
 - НЕ добавляй футер, подпись, контакты и ссылку на источник — их подставит система сама.
 
@@ -341,11 +357,13 @@ def make_post(item: dict) -> str:
 
     msg = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1000,
+        max_tokens=2000,                      # достаточно для развёрнутого поста
         system=CHANNEL_VOICE,
         messages=[{"role": "user", "content": prompt}],
     )
     body = msg.content[0].text.strip()
+    # страховка: пост + источник + футер должны влезть в сообщение (лимит 4096)
+    body = _fit_body(body, reserve=len(tail) + 100)
     return f"{body}{tail}"
 
 # ----------------------------------------------------------------------------
@@ -573,12 +591,14 @@ def publish_approved():
         if not data:
             continue  # реакция на что-то не из очереди — игнор
         try:
-            # заново рисуем выбранную обложку и публикуем пост картинкой с подписью
+            # публикуем ДВУМЯ сообщениями: сначала обложка, следом полный текст
             cover = make_cover(
                 data["title"], data["source"], data["variant"],
                 data.get("image_url") or None,
             )
-            send_photo(TELEGRAM_CHANNEL, cover, ensure_footer(data["text"]))
+            send_photo(TELEGRAM_CHANNEL, cover, "")                 # обложка (картинка)
+            time.sleep(1)
+            send_message(TELEGRAM_CHANNEL, ensure_footer(data["text"]))  # полный текст + футер
 
             # убираем ВСЕ черновики этого материала (оба варианта обложки)
             grp = data.get("group")
@@ -587,7 +607,7 @@ def publish_approved():
 
             published += 1
             print(f"✓ Одобрено и опубликовано в канал (вариант «{data['variant']}»)")
-            time.sleep(3)
+            time.sleep(2)
         except Exception as e:
             print(f"✗ Не смог опубликовать (msg {mid}): {e}")
 
@@ -610,15 +630,17 @@ def queue_drafts(seen: set):
         try:
             post_text = make_post(item)
 
-            # два варианта обложки: «с фото из новости» и «дизайн»
-            variants = [
-                ("photo",  "с фото"),
-                ("design", "дизайн"),
-            ]
-            for variant, label in variants:
+            # 1) полный текст поста — отдельным сообщением, чтобы прочитать целиком
+            send_message(REVIEW_CHAT_ID,
+                         "🔎 ЧЕРНОВИК — прочитай текст, затем поставь реакцию на нужную обложку ниже 👇\n\n"
+                         + post_text)
+            time.sleep(1)
+
+            # 2) две обложки с короткими подписями — реакция на обложку = публикуем с ней
+            for variant, label in [("photo", "с фото"), ("design", "дизайн")]:
                 cover = make_cover(item["title"], item["source"], variant, item.get("image_url"))
-                caption = f"🔎 ЧЕРНОВИК · обложка «{label}» (реакция = публикуем ЭТОТ вариант)\n\n" + post_text
-                resp = send_photo(REVIEW_CHAT_ID, cover, caption)
+                resp = send_photo(REVIEW_CHAT_ID, cover,
+                                  f"🖼 Обложка «{label}» — поставь реакцию, чтобы опубликовать пост с ней")
                 mid = resp["result"]["message_id"]
                 pending[str(mid)] = {
                     "text": post_text,
@@ -630,9 +652,9 @@ def queue_drafts(seen: set):
                 }
                 time.sleep(1)
 
-            seen.add(item["id"])               # больше этот материал не берём
+            seen.add(item["id"])
             sent += 1
-            print(f"→ Черновик (2 обложки) отправлен на проверку: {item['title'][:55]}")
+            print(f"→ Черновик (текст + 2 обложки) отправлен: {item['title'][:50]}")
         except Exception as e:
             print(f"✗ Пропустил «{item['title'][:40]}»: {e}")
 
@@ -659,7 +681,9 @@ def main():
                 break
             try:
                 cover = make_cover(item["title"], item["source"], "design", item.get("image_url"))
-                send_photo(TELEGRAM_CHANNEL, cover, ensure_footer(make_post(item)))
+                send_photo(TELEGRAM_CHANNEL, cover, "")
+                time.sleep(1)
+                send_message(TELEGRAM_CHANNEL, ensure_footer(make_post(item)))
                 seen.add(item["id"])
                 posted += 1
                 print(f"✓ Опубликовано: {item['title'][:60]}")

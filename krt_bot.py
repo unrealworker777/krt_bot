@@ -17,8 +17,10 @@ import io
 import re
 import json
 import time
+import calendar
 import hashlib
 import urllib.parse
+from datetime import datetime
 
 import requests
 import feedparser
@@ -55,6 +57,9 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 # Сколько новостей публиковать за один запуск (чтобы не спамить канал).
 MAX_POSTS_PER_RUN = 3
+
+# Брать новости только за последние N дней (текущая неделя).
+MAX_AGE_DAYS = 7
 
 # Файл-память: тут храним ссылки, которые уже опубликовали.
 SEEN_FILE = "seen.json"
@@ -253,6 +258,15 @@ def read_telegram_channel(username: str) -> list:
         link_el = msg.select_one("a.tgme_widget_message_date")
         if not text_el:
             continue
+        # только свежее: если у поста есть дата и он старше недели — пропускаем
+        time_el = msg.select_one("time[datetime]")
+        if time_el and time_el.has_attr("datetime"):
+            try:
+                ts = datetime.fromisoformat(time_el["datetime"]).timestamp()
+                if time.time() - ts > MAX_AGE_DAYS * 86400:
+                    continue
+            except Exception:
+                pass
         text = text_el.get_text("\n", strip=True)
         # Берём только посты, где реально речь про КРТ.
         if not any(k in text.lower() for k in KEYWORDS):
@@ -276,6 +290,10 @@ def collect_news(seen: set) -> list:
             nid = news_id(entry)
             if nid in seen:
                 continue  # уже постили — пропускаем
+            # только свежее: пропускаем новости старше MAX_AGE_DAYS
+            pub = entry.get("published_parsed") or entry.get("updated_parsed")
+            if pub and (time.time() - calendar.timegm(pub)) > MAX_AGE_DAYS * 86400:
+                continue
             # пытаемся достать картинку из новости (для обложки-фото)
             img = ""
             if entry.get("media_content"):
@@ -463,12 +481,17 @@ def _draw_centered_title(img, title):
 
 
 def _draw_footer(img, source):
-    """Мелкая подпись снизу по центру: источник + метка канала."""
+    """Снизу обложки: слева белым бренд «IPM | LAB», справа — источник золотом."""
     draw = ImageDraw.Draw(img)
-    font = _font(26)
-    label = (source or "КРТ").strip()[:60]
-    w = draw.textlength(label, font=font)
-    draw.text(((COVER_W - w) // 2, COVER_H - 60), label, font=font, fill=ACCENT)
+    # бренд-подпись слева, белым
+    brand_font = _font(30)
+    draw.text((44, COVER_H - 62), "IPM | LAB", font=brand_font, fill=(255, 255, 255))
+    # источник справа, золотом, помельче
+    if source:
+        sfont = _font(24)
+        label = source.strip()[:38]
+        w = draw.textlength(label, font=sfont)
+        draw.text((COVER_W - 44 - w, COVER_H - 58), label, font=sfont, fill=ACCENT)
 
 
 def make_cover(title: str, source: str, variant: str, image_url: str = None) -> bytes:

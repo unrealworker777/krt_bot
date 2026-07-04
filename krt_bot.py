@@ -150,6 +150,10 @@ SOURCES = [
     # --- Отраслевые порталы, аналитика, СМИ ---
     site_krt("erzrf.ru"),             # ЕРЗ.РФ — Единый ресурс застройщиков
     site_krt("realty.rbc.ru"),        # РБК Недвижимость
+    site_krt("rbc.ru"),               # РБК (весь портал)
+    site_krt("forbes.ru"),            # Forbes Россия
+    google_news_rss('КРТ девелопмент застройка site:rbc.ru'),
+    google_news_rss('КРТ девелопмент недвижимость site:forbes.ru'),
     site_krt("dvizhenie.ru"),         # Движение.ру
     site_krt("congress-krt.ru"),      # Всероссийский Конгресс по КРТ
 

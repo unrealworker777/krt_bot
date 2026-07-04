@@ -25,7 +25,7 @@ from datetime import datetime
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from anthropic import Anthropic
 
 # ----------------------------------------------------------------------------
@@ -494,22 +494,46 @@ def make_post(item: dict) -> str:
 
 COVER_W, COVER_H = 1200, 630
 
-# Фирменные цвета. Сейчас — тёмный бирюзово-графитовый + золото.
-# Хочешь нейтральный синий вместо золота — поставь ACCENT = (60, 130, 200).
-BG_DARK     = (20, 26, 32)     # низ фона
-BG_TOP      = (28, 58, 75)     # верх фона (тёмная бирюза)
-ACCENT      = (201, 168, 76)   # золотые полосы/подпись
-TITLE_COLOR = (255, 255, 255)
+# Палитра обложки — глубокая, «премиальная».
+BG_TOP      = (17, 31, 51)     # верх: глубокий сине-стальной
+BG_DARK     = (6, 10, 18)      # низ: почти чёрный
+ACCENT      = (201, 168, 106)  # приглушённое золото
+TITLE_COLOR = (244, 247, 250)  # мягкий белый
+
+
+# Основной шрифт обложек. Положи файл шрифта в папку fonts/ рядом с krt_bot.py.
+# Годится любой .ttf/.otf; если файла нет — бот откатится на системный DejaVu.
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+
+def _custom_font_path():
+    """Возвращает путь к пользовательскому шрифту из папки fonts/ (любой .ttf/.otf)."""
+    exact = os.path.join(FONT_DIR, "Bildungswirkung.ttf")
+    if os.path.exists(exact):
+        return exact
+    if os.path.isdir(FONT_DIR):
+        for f in sorted(os.listdir(FONT_DIR)):
+            if f.lower().endswith((".ttf", ".otf")):
+                return os.path.join(FONT_DIR, f)
+    return None
 
 
 def _font(size: int):
-    """Берёт жирный шрифт с поддержкой кириллицы (есть в системе на GitHub)."""
-    for p in (
+    """Берёт основной шрифт из fonts/, иначе — системный DejaVu (кириллица)."""
+    candidates = []
+    custom = _custom_font_path()
+    if custom:
+        candidates.append(custom)
+    candidates += [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ):
+    ]
+    for p in candidates:
         if os.path.exists(p):
-            return ImageFont.truetype(p, size)
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                continue
     return ImageFont.load_default()
 
 
@@ -575,10 +599,10 @@ def _draw_centered_title(img, title):
 
 
 def _draw_footer(img, source=None):
-    """Снизу-слева — белый бренд «IPM | LAB». Источник на обложке не пишем."""
+    """Снизу-слева — золотой маркер + белый бренд «IPM | LAB». Источник не пишем."""
     draw = ImageDraw.Draw(img)
-    brand_font = _font(30)
-    draw.text((44, COVER_H - 62), "IPM | LAB", font=brand_font, fill=(255, 255, 255))
+    draw.rectangle([44, COVER_H - 56, 51, COVER_H - 38], fill=ACCENT)   # золотой штрих
+    draw.text((62, COVER_H - 60), "IPM | LAB", font=_font(29), fill=(255, 255, 255))
 
 
 def _topic_of(title: str) -> str:
@@ -589,37 +613,51 @@ def _topic_of(title: str) -> str:
     return "krt"
 
 
-def _draw_theme(img: Image.Image, topic: str) -> Image.Image:
-    """Рисует снизу еле заметный тематический силуэт: домики (ИЖС) или здания (КРТ).
-    Полупрозрачный, чтобы не мешать заголовку."""
+def _draw_glow(img: Image.Image) -> Image.Image:
+    """Мягкое свечение за заголовком — придаёт фону глубину, 'ночной город'."""
     overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
-    color = (255, 255, 255, 38)            # белый силуэт, очень прозрачный
-    base = COVER_H - 16                     # линия «земли» у нижнего края
+    cx, cy = COVER_W // 2, int(COVER_H * 0.40)
+    d.ellipse([cx - 430, cy - 210, cx + 430, cy + 210], fill=(58, 96, 150, 70))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(130))
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-    if topic == "izhs":
-        # ряд домиков с двускатными крышами
-        x = 20
-        import random as _r
-        _r.seed(len(img.tobytes()) % 1000)  # стабильно, но с вариацией
-        while x < COVER_W:
-            w = _r.choice([90, 110, 130])
-            h = _r.choice([70, 90, 110])
-            roof = int(w * 0.45)
-            d.rectangle([x, base - h, x + w, base], fill=color)              # тело дома
-            d.polygon([(x - 8, base - h), (x + w + 8, base - h),
-                       (x + w / 2, base - h - roof)], fill=color)            # крыша
-            x += w + 34
-    else:
-        # силуэт городской застройки — прямоугольные здания разной высоты
-        x = 10
-        import random as _r
-        _r.seed(len(img.tobytes()) % 1000)
-        while x < COVER_W:
-            w = _r.choice([70, 90, 110])
-            h = _r.choice([110, 150, 190, 230])
-            d.rectangle([x, base - h, x + w, base], fill=color)
-            x += w + 22
+
+def _draw_theme(img: Image.Image, topic: str) -> Image.Image:
+    """Еле заметный фоновый силуэт застройки снизу — с глубиной (дальний и ближний
+    план) и тонкой золотой линией горизонта. Заголовок остаётся поверх и читается."""
+    import random as _r
+    _r.seed(len(img.tobytes()) % 1000)
+    overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    base = COVER_H - 12
+    far = (255, 255, 255, 12)     # дальний план — почти не виден
+    near = (0, 0, 0, 46)          # ближний — тёмный силуэт на фоне
+
+    # дальний план (тонкие высокие силуэты)
+    x = -20
+    while x < COVER_W + 20:
+        w = _r.choice([44, 58, 72])
+        h = _r.choice([150, 200, 250])
+        d.rectangle([x, base - h, x + w, base], fill=far)
+        x += w + _r.choice([10, 16])
+
+    # ближний план
+    x = -30
+    while x < COVER_W + 30:
+        if topic == "izhs":
+            w = _r.choice([110, 140]); h = _r.choice([70, 95, 120]); roof = int(w * 0.42)
+            d.rectangle([x, base - h, x + w, base], fill=near)
+            d.polygon([(x - 10, base - h), (x + w + 10, base - h),
+                       (x + w / 2, base - h - roof)], fill=near)
+            x += w + _r.choice([34, 50])
+        else:
+            w = _r.choice([70, 92, 116]); h = _r.choice([120, 175, 235, 290])
+            d.rectangle([x, base - h, x + w, base], fill=near)
+            x += w + _r.choice([12, 18])
+
+    # тонкая золотая линия горизонта
+    d.rectangle([0, base - 2, COVER_W, base], fill=(ACCENT[0], ACCENT[1], ACCENT[2], 90))
 
     out = Image.alpha_composite(img.convert("RGBA"), overlay)
     return out.convert("RGB")
@@ -633,10 +671,10 @@ def make_cover(title: str, source: str, variant: str, image_url: str = None) -> 
             img = _gradient((44, 48, 56), (18, 20, 26))
     else:                                  # design
         img = _gradient(BG_TOP, BG_DARK)
-        img = _draw_theme(img, _topic_of(title))                     # тематический силуэт
+        img = _draw_glow(img)                                        # мягкое свечение
+        img = _draw_theme(img, _topic_of(title))                     # фоновый силуэт города
         d = ImageDraw.Draw(img)
-        d.rectangle([0, 0, COVER_W, 12], fill=ACCENT)                 # полоса сверху
-        d.rectangle([0, COVER_H - 12, COVER_W, COVER_H], fill=ACCENT) # полоса снизу
+        d.rectangle([0, 0, COVER_W, 4], fill=ACCENT)                 # тонкая золотая рамка сверху
 
     _draw_centered_title(img, title)
     _draw_footer(img, source)

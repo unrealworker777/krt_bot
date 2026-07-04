@@ -88,8 +88,8 @@ CHANNEL_VOICE = """Ты — редактор Telegram-канала о девел
 ADD_FOOTER = False
 
 # Показывать ли строку «📎 Подробнее здесь: источник» под постом.
-# False → строки нет (текущий режим). True → вернуть ссылку на источник.
-SHOW_SOURCE = False
+# False → строки нет. True → ссылка на источник под постом (текущий режим).
+SHOW_SOURCE = True
 
 FOOTER = (
     '<a href="https://t.me/expert_developer">'

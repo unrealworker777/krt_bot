@@ -61,6 +61,12 @@ MAX_POSTS_PER_RUN = 3
 # Брать новости только за последние N дней (текущая неделя).
 MAX_AGE_DAYS = 7
 
+# --- ГИС Торги (аукционы КРТ) ---
+TORGI_API = "https://torgi.gov.ru/new/api/public/lotcards/search"
+# Сколько лотов ГИС Торги ставить ВПЕРЁД остальных новостей за один запуск
+# (приоритет торгам, но не в ущерб обычным новостям).
+TORGI_PRIORITY_PER_RUN = 2
+
 # Файл-память: тут храним ссылки, которые уже опубликовали.
 SEEN_FILE = "seen.json"
 
@@ -372,6 +378,54 @@ def _hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+def collect_torgi(seen: set) -> list:
+    """Тянет свежие лоты КРТ напрямую из API ГИС Торги (первоисточник по аукционам).
+    Возвращает список в том же формате, что и новости, с пометкой is_torgi."""
+    items = []
+    try:
+        r = requests.get(TORGI_API, params={
+            "text": "комплексное развитие территории",
+            "lotStatus": "PUBLISHED,APPLICATIONS_SUBMISSION",
+            "page": 0, "size": 20,
+            "sort": "firstVersionPublicationDate,desc",
+        }, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, timeout=30)
+        data = r.json()
+    except Exception as e:
+        print(f"ГИС Торги недоступен ({e}) — пропускаю торги в этот раз")
+        return items
+
+    for lot in data.get("content", []):
+        lot_id = lot.get("id", "")
+        if not lot_id:
+            continue
+        link = f"https://torgi.gov.ru/new/public/lots/lot/{lot_id}"
+        nid = hashlib.sha256(link.encode("utf-8")).hexdigest()[:16]
+        if nid in seen:
+            continue
+        name = (lot.get("lotName") or "Лот КРТ").strip()
+        # характеристики (площадь, кадастр)
+        chars = {c.get("code"): c.get("characteristicValue")
+                 for c in lot.get("characteristics", []) if c.get("code")}
+        facts = []
+        price = lot.get("priceMin")
+        if price:
+            facts.append("Стартовая цена: " + f"{int(price):,}".replace(",", " ") + " ₽")
+        if chars.get("squareKRT"):
+            facts.append(f"Площадь участка: {chars['squareKRT']} м²")
+        if chars.get("CadastralNumberKRT"):
+            facts.append(f"Кадастровый номер: {chars['CadastralNumberKRT']}")
+        end = (lot.get("biddEndTime") or "")[:10]
+        if end:
+            facts.append(f"Приём заявок до: {end}")
+
+        items.append({
+            "id": nid, "title": name[:150], "summary": " • ".join(facts),
+            "link": link, "source": "ГИС Торги", "image_url": "", "is_torgi": True,
+        })
+    print(f"ГИС Торги: новых лотов КРТ: {len(items)}")
+    return items
+
+
 def collect_news(seen: set) -> list:
     """Читает все источники и возвращает список НОВЫХ новостей."""
     fresh = []
@@ -421,7 +475,10 @@ def collect_news(seen: set) -> list:
             continue                                    # почти дубль другой заметки
         batch_hashes.append(sh)
         result.append(item)
-    return result
+
+    # ПРИОРИТЕТ ГИС Торги: несколько лотов КРТ ставим ВПЕРЁД обычных новостей.
+    torgi = collect_torgi(seen)
+    return torgi[:TORGI_PRIORITY_PER_RUN] + result
 
 # ----------------------------------------------------------------------------
 # 5. ТЕКСТ ПОСТА через Claude
@@ -457,9 +514,22 @@ def make_post(item: dict) -> str:
         source_line = f'\n\n📎 Подробнее здесь: <a href="{item["link"]}">{label}</a>'
     tail = source_line + ("\n\n" + FOOTER if ADD_FOOTER else "")  # футер — только если включён
 
+    # Лоты ГИС Торги — собираем пост из точных данных лота (без ИИ, чтобы не переврать цифры).
+    if item.get("is_torgi"):
+        lines = ["🏛 <b>Аукцион по КРТ</b>", "", f"<b>{item['title']}</b>"]
+        if item.get("summary"):
+            lines.append("")
+            for f in item["summary"].split(" • "):
+                emo = ("💰" if f.startswith("Стартовая") else
+                       "📐" if f.startswith("Площадь") else
+                       "🗺" if f.startswith("Кадастровый") else
+                       "🗓" if f.startswith("Приём") else "🔹")
+                lines.append(f"{emo} {f}")
+        return "\n".join(lines) + tail
+
     # Без ключа Claude — простая заглушка, но уже с футером и источником.
     if not ANTHROPIC_API_KEY:
-        return f"📌 <b>{item['title']}</b>{tail}"
+        return f"📍 <b>{item['title']}</b>{tail}"
 
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -500,8 +570,8 @@ def make_post(item: dict) -> str:
     body = msg.content[0].text.strip()
     # тело + источник + футер должны влезть в подпись к фото (по видимому тексту)
     body = _fit_body(body, tail, prefix_reserve=60, limit=1024)
-    if not body.lstrip().startswith("📌"):
-        body = "📌 " + body          # маркер-заголовок в начале поста
+    if not body.lstrip().startswith("📍"):
+        body = "📍 " + body          # маркер-заголовок в начале поста
     return f"{body}{tail}"
 
 # ----------------------------------------------------------------------------
@@ -706,36 +776,86 @@ def make_cover(title: str, source: str, variant: str, image_url: str = None) -> 
 # 6. ОБЩЕНИЕ С TELEGRAM
 # ----------------------------------------------------------------------------
 
-def tg_api(method: str, payload: dict) -> dict:
-    """Базовый вызов любого метода Telegram Bot API."""
+def tg_api(method: str, payload: dict, soft: bool = False) -> dict:
+    """Базовый вызов любого метода Telegram Bot API.
+    soft=True — вернуть ответ даже при ошибке (не бросать исключение)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
     resp = requests.post(url, json=payload, timeout=60)
     data = resp.json()
-    if not data.get("ok"):
+    if not data.get("ok") and not soft:
         raise RuntimeError(f"Telegram вернул ошибку ({method}): {data}")
     return data
 
 
+def strip_tags(text: str) -> str:
+    """Убирает все HTML-теги — для отправки обычным текстом, если разметка битая."""
+    text = re.sub(r"<[^>]*>", "", text or "")
+    return text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+def sanitize_html(text: str) -> str:
+    """Делает разметку безопасной для Telegram: экранирует случайные < > &,
+    сохраняя валидные теги <b> <i> <a href>, и закрывает незакрытые теги."""
+    text = text or ""
+    # 1) выкинуть заведомо ОБРЕЗАННЫЙ тег в конце (после обрезки по длине),
+    #    но только если это реальное начало тега (< + буква/слэш), а не «<5 га»
+    text = re.sub(r"<\/?[a-zA-Z][^>]*$", "", text)
+
+    # 2) защитить валидные теги, экранировать остальные < > &, вернуть теги
+    saved = []
+    def _protect(mm):
+        saved.append(mm.group(0))
+        return f"\x00{len(saved) - 1}\x00"
+    text = re.sub(r'</?(?:b|i)>|<a\s+href="[^"]*">|</a>', _protect, text, flags=re.I)
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    for i, tag in enumerate(saved):
+        text = text.replace(f"\x00{i}\x00", tag)
+
+    # 3) закрыть незакрытые b/i/a
+    for tag in ("b", "i"):
+        o = len(re.findall(rf"<{tag}>", text, re.I))
+        c = len(re.findall(rf"</{tag}>", text, re.I))
+        if o > c:
+            text += f"</{tag}>" * (o - c)
+    ao = len(re.findall(r"<a\b[^>]*>", text, re.I))
+    ac = len(re.findall(r"</a>", text, re.I))
+    if ao > ac:
+        text += "</a>" * (ao - ac)
+    return text
+
+
 def send_message(chat_id, text: str) -> dict:
-    """Отправляет сообщение в указанный чат (канал или личку). Возвращает ответ."""
-    return tg_api("sendMessage", {
-        "chat_id": chat_id,
-        "text": text[:4096],            # лимит Telegram на длину сообщения
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
-    })
+    """Отправляет сообщение. Если HTML битый — шлёт обычным текстом (не теряя пост)."""
+    resp = tg_api("sendMessage", {
+        "chat_id": chat_id, "text": sanitize_html(text)[:4096],
+        "parse_mode": "HTML", "disable_web_page_preview": False,
+    }, soft=True)
+    if not resp.get("ok") and "parse entities" in str(resp.get("description", "")):
+        resp = tg_api("sendMessage", {
+            "chat_id": chat_id, "text": strip_tags(text)[:4096],
+            "disable_web_page_preview": False,
+        })
+    if not resp.get("ok"):
+        raise RuntimeError(f"Telegram sendMessage ошибка: {resp}")
+    return resp
 
 
 def send_photo(chat_id, image_bytes: bytes, caption: str) -> dict:
-    """Отправляет фото (обложку) с подписью. Возвращает ответ Telegram."""
+    """Отправляет фото с подписью. Если HTML в подписи битый — шлёт подпись без разметки."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    resp = requests.post(
-        url,
-        data={"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
-        files={"photo": ("cover.png", image_bytes, "image/png")},
-        timeout=90,
-    )
-    data = resp.json()
+
+    def _post(cap, html=True):
+        data = {"chat_id": chat_id, "caption": cap[:1024]}
+        if html:
+            data["parse_mode"] = "HTML"
+        return requests.post(
+            url, data=data,
+            files={"photo": ("cover.png", image_bytes, "image/png")}, timeout=90,
+        ).json()
+
+    data = _post(sanitize_html(caption), html=True)
+    if not data.get("ok") and "parse entities" in str(data.get("description", "")):
+        data = _post(strip_tags(caption), html=False)     # запасной путь: без разметки
     if not data.get("ok"):
         raise RuntimeError(f"Telegram sendPhoto ошибка: {data}")
     return data
@@ -903,3 +1023,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+  

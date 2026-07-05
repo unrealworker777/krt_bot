@@ -510,8 +510,11 @@ def make_post(item: dict) -> str:
     Футер и ссылку на источник добавляет сам код — модель их не пишет."""
     source_line = ""
     if SHOW_SOURCE and item.get("link"):
-        label = item.get("source") or "источник"
-        source_line = f'\n\n📎 Подробнее здесь: <a href="{item["link"]}">{label}</a>'
+        # экранируем адрес (в ссылках Google News бывает &) и название источника,
+        # иначе Telegram не разберёт разметку и ссылка станет обычным текстом
+        url = item["link"].replace("&", "&amp;").replace('"', "%22")
+        label = (item.get("source") or "источник").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        source_line = f'\n\n📎 Подробнее здесь: <a href="{url}">{label}</a>'
     tail = source_line + ("\n\n" + FOOTER if ADD_FOOTER else "")  # футер — только если включён
 
     # Лоты ГИС Торги — собираем пост из точных данных лота (без ИИ, чтобы не переврать цифры).
@@ -1023,4 +1026,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-  

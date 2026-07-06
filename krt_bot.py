@@ -509,10 +509,13 @@ def make_post(item: dict) -> str:
     """Превращает сырую новость в пост в голосе IPM | LAB.
     Футер и ссылку на источник добавляет сам код — модель их не пишет."""
     source_line = ""
-    if SHOW_SOURCE and item.get("link"):
-        # экранируем адрес (в ссылках Google News бывает &) и название источника,
-        # иначе Telegram не разберёт разметку и ссылка станет обычным текстом
-        url = item["link"].replace("&", "&amp;").replace('"', "%22")
+    if SHOW_SOURCE:
+        link = item.get("link")
+        if not link:
+            # у новости нет прямой ссылки — ведём на поиск по заголовку
+            link = "https://www.google.com/search?q=" + urllib.parse.quote(item.get("title", ""))
+        # экранируем адрес (в ссылках Google News бывает &) и название источника
+        url = link.replace("&", "&amp;").replace('"', "%22")
         label = (item.get("source") or "источник").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         source_line = f'\n\n📎 Подробнее здесь: <a href="{url}">{label}</a>'
     tail = source_line + ("\n\n" + FOOTER if ADD_FOOTER else "")  # футер — только если включён
@@ -848,7 +851,9 @@ def send_photo(chat_id, image_bytes: bytes, caption: str) -> dict:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 
     def _post(cap, html=True):
-        data = {"chat_id": chat_id, "caption": cap[:1024]}
+        # НЕ режем по сырым символам: лимит Telegram (1024) — по ВИДИМОМУ тексту,
+        # а длинный адрес ссылки его не занимает. Обрезка тут ломала ссылку в конце.
+        data = {"chat_id": chat_id, "caption": cap}
         if html:
             data["parse_mode"] = "HTML"
         return requests.post(
@@ -858,6 +863,7 @@ def send_photo(chat_id, image_bytes: bytes, caption: str) -> dict:
 
     data = _post(sanitize_html(caption), html=True)
     if not data.get("ok") and "parse entities" in str(data.get("description", "")):
+        print("⚠ HTML в подписи не разобрался — отправляю без разметки (ссылка станет текстом)")
         data = _post(strip_tags(caption), html=False)     # запасной путь: без разметки
     if not data.get("ok"):
         raise RuntimeError(f"Telegram sendPhoto ошибка: {data}")

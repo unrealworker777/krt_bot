@@ -138,6 +138,14 @@ SOURCES = [
     google_news_rss('"комплексное развитие территорий" застройщик'),
     google_news_rss('договор КРТ торги застройка'),
 
+    # --- Тематические запросы по приоритетным игрокам (пресса пишет о них) ---
+    google_news_rss('КРТ Минстрой'),
+    google_news_rss('КРТ ФАС торги'),
+    google_news_rss('КРТ Москва застройка'),
+    google_news_rss('КРТ Московская область'),
+    google_news_rss('КРТ застройщики ЕРЗ'),
+    google_news_rss('комплексное развитие территорий решение власти'),
+
     # --- Общая пресса: ИЖС ---
     google_news_rss('ИЖС "индивидуальное жилищное строительство"'),
     google_news_rss('ИЖС ипотека ДОМ.РФ малоэтажное строительство'),
@@ -225,8 +233,15 @@ SOURCES = [
 # Бот читает их веб-витрину t.me/s/<имя> — доступ/админка не нужны.
 # Впиши сюда реальные каналы, за которыми хочешь следить:
 TELEGRAM_SOURCES = [
-    # "expert_developer",
-    # "krt_russia",
+    # Приоритетные источники — их официальные телеграм-каналы (прямой поток КРТ/ИЖС).
+    "erzrf",           # ЕРЗ.РФ
+    "minstroyrf",      # Минстрой России
+    "minstroymo",      # Минстрой Московской области
+    "stroi_mos_ru",    # Стройкомплекс Москвы
+    "fasrussia",       # ФАС России
+    "government_rus",  # Правительство России
+    "duma_gov_ru",     # Государственная Дума
+    "mosrutop",        # Правительство Москвы (mos.ru)
 ]
 
 # Слова-маркеры: пост из телеграм-канала берём, только если он про КРТ
@@ -295,20 +310,22 @@ def read_telegram_channel(username: str) -> list:
     items = []
     url = f"https://t.me/s/{username}"
     try:
-        html = requests.get(
-            url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
-        ).text
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        html = resp.text
     except Exception as e:
-        print(f"  Не смог прочитать @{username}: {e}")
+        print(f"  @{username}: не смог прочитать ({e})")
         return items
 
     soup = BeautifulSoup(html, "html.parser")
-    for msg in soup.select(".tgme_widget_message_wrap"):
+    wraps = soup.select(".tgme_widget_message_wrap")
+    total = len(wraps)
+    matched = 0
+    for msg in wraps:
         text_el = msg.select_one(".tgme_widget_message_text")
         link_el = msg.select_one("a.tgme_widget_message_date")
         if not text_el:
             continue
-        # только свежее: если у поста есть дата и он старше недели — пропускаем
+        # только свежее: если у поста есть дата и он старше окна — пропускаем
         time_el = msg.select_one("time[datetime]")
         if time_el and time_el.has_attr("datetime"):
             try:
@@ -318,9 +335,10 @@ def read_telegram_channel(username: str) -> list:
             except Exception:
                 pass
         text = text_el.get_text("\n", strip=True)
-        # Берём только посты, где реально речь про КРТ.
+        # Берём только посты, где реально речь про КРТ/ИЖС.
         if not any(k in text.lower() for k in KEYWORDS):
             continue
+        matched += 1
         link = link_el["href"] if (link_el and link_el.has_attr("href")) else url
         items.append({
             "title": text.split("\n")[0][:120],   # первая строка как заголовок
@@ -328,6 +346,9 @@ def read_telegram_channel(username: str) -> list:
             "link": link,
             "source": f"Telegram @{username}",
         })
+
+    note = "  ⚠ витрина пуста — вероятно, выключен веб-предпросмотр или неверное имя" if total == 0 else ""
+    print(f"  @{username}: постов на витрине {total}, про КРТ/ИЖС {matched}{note}")
     return items
 
 
@@ -475,20 +496,26 @@ def collect_news(seen: set) -> list:
             })
 
     # --- Телеграм-каналы (веб-витрина t.me/s/...) ---
+    print("Читаю телеграм-каналы приоритетных источников:")
+    tg_count = 0
     for username in TELEGRAM_SOURCES:
         for tg in read_telegram_channel(username):
             nid = news_id(tg)
             if nid in seen:
                 continue
             tg["id"] = nid
+            tg["is_tg"] = True
             fresh.append(tg)
+            tg_count += 1
+    print(f"Собрано новых постов из телеграм-каналов: {tg_count}")
 
     # Отбор: релевантность (точность) + near-дедуп (похожие перепечатки одной новости).
     result = []
     batch_hashes = []
     for item in fresh:
         blob = item["title"] + " " + item.get("summary", "")
-        if not is_relevant(blob):
+        # телеграм-посты уже отобраны по ключевым словам — второй фильтр им не нужен
+        if not item.get("is_tg") and not is_relevant(blob):
             continue                                    # мимо темы — отбрасываем
         sh = _simhash(item["title"])
         if any(_hamming(sh, h) <= 6 for h in batch_hashes):

@@ -56,10 +56,10 @@ REVIEW_CHAT_ID = os.environ.get("REVIEW_CHAT_ID")
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 # Сколько новостей публиковать за один запуск (чтобы не спамить канал).
-MAX_POSTS_PER_RUN = 3
+MAX_POSTS_PER_RUN = 5
 
-# Брать новости только за последние N дней (текущая неделя).
-MAX_AGE_DAYS = 7
+# Брать новости только за последние N дней.
+MAX_AGE_DAYS = 14
 
 # --- ГИС Торги (аукционы КРТ) ---
 TORGI_API = "https://torgi.gov.ru/new/api/public/lotcards/search"
@@ -360,6 +360,26 @@ def is_relevant(text: str) -> bool:
     return False
 
 
+# Приоритетные источники: их новости идут ВПЕРЁД остальных.
+# ЕРЗ, Минстрой, Москва/МО, ФАС, отраслевые СМИ, юрбюро, регионы.
+PRIORITY_KEYWORDS = [
+    "ерз", "erzrf", "застройщик",                                   # ЕРЗ.РФ
+    "минстрой",                                                     # Минстрой
+    "москв", "mos.ru", "mosreg", "подмосков", "мособл",             # Москва / МО
+    "фас",                                                          # ФАС
+    "рбк", "ведомост", "коммерсант", "движение", "дом.рф", "domrf", # отраслевые СМИ
+    "строительн", "недвижимост",
+    "право", "адвокат", "юрист", "качкин", "регионсервис",          # юрбюро
+    "татарстан", "нижегород", "красноярск", "область", "край", "республик",  # регионы
+]
+
+
+def source_priority(item: dict) -> int:
+    """0 — приоритетный источник (из списка выше), 1 — обычный."""
+    blob = ((item.get("source") or "") + " " + (item.get("title") or "")).lower()
+    return 0 if any(k in blob for k in PRIORITY_KEYWORDS) else 1
+
+
 def _simhash(text: str, bits: int = 64) -> int:
     """SimHash заголовка — для отлова near-дублей (одна новость в разных источниках)."""
     vec = [0] * bits
@@ -471,10 +491,13 @@ def collect_news(seen: set) -> list:
         if not is_relevant(blob):
             continue                                    # мимо темы — отбрасываем
         sh = _simhash(item["title"])
-        if any(_hamming(sh, h) <= 10 for h in batch_hashes):
-            continue                                    # почти дубль другой заметки
+        if any(_hamming(sh, h) <= 6 for h in batch_hashes):
+            continue                                    # почти дубль другой заметки (только явные перепечатки)
         batch_hashes.append(sh)
         result.append(item)
+
+    # Приоритет источников: ЕРЗ/Минстрой/Москва-МО/ФАС/СМИ/юрбюро/регионы — вперёд.
+    result.sort(key=source_priority)
 
     # ПРИОРИТЕТ ГИС Торги: несколько лотов КРТ ставим ВПЕРЁД обычных новостей.
     torgi = collect_torgi(seen)

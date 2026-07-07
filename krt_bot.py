@@ -484,9 +484,13 @@ def collect_erz(seen: set) -> list:
     soup = BeautifulSoup(html, "html.parser")
     seen_links = set()
     for a in soup.find_all("a", href=True):
-        href = a["href"].split("?")[0]
-        # статьи новостей ЕРЗ: /news/<slug>  (служебные страницы пропускаем)
-        if not re.match(r"^/news/[a-zA-Z0-9\-]+$", href) or href.endswith("news-archive"):
+        href = a["href"].split("?")[0].split("#")[0]
+        # приводим абсолютные ссылки к относительным
+        href = href.replace("https://erzrf.ru", "").replace("http://erzrf.ru", "")
+        # статьи ЕРЗ: /news/<slug> ИЛИ /news/article/<Slug> (новый формат)
+        if not re.match(r"^/news/(?:article/)?[A-Za-z0-9_\-]+$", href):
+            continue
+        if href.endswith("news-archive") or href.endswith("/news/article"):
             continue
         title = a.get_text(" ", strip=True)
         if len(title) < 15:

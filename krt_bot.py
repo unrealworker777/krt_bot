@@ -467,6 +467,48 @@ def collect_torgi(seen: set) -> list:
     return items
 
 
+ERZ_NEWS_URL = "https://erzrf.ru/news"
+
+
+def collect_erz(seen: set) -> list:
+    """Парсит ленту новостей ЕРЗ.РФ напрямую (erzrf.ru/news) и берёт материалы
+    про КРТ/ИЖС. Опирается на адреса статей /news/<slug>, а не на хрупкие CSS-классы."""
+    items = []
+    try:
+        html = requests.get(ERZ_NEWS_URL, timeout=30,
+                            headers={"User-Agent": "Mozilla/5.0"}).text
+    except Exception as e:
+        print(f"ЕРЗ.РФ недоступен ({e}) — пропускаю")
+        return items
+
+    soup = BeautifulSoup(html, "html.parser")
+    seen_links = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].split("?")[0]
+        # статьи новостей ЕРЗ: /news/<slug>  (служебные страницы пропускаем)
+        if not re.match(r"^/news/[a-zA-Z0-9\-]+$", href) or href.endswith("news-archive"):
+            continue
+        title = a.get_text(" ", strip=True)
+        if len(title) < 15:
+            continue
+        low = title.lower()
+        if not any(k in low for k in KEYWORDS):     # только КРТ/ИЖС
+            continue
+        full = "https://erzrf.ru" + href
+        if full in seen_links:
+            continue
+        seen_links.add(full)
+        nid = hashlib.sha256(full.encode("utf-8")).hexdigest()[:16]
+        if nid in seen:
+            continue
+        items.append({
+            "id": nid, "title": title[:150], "summary": title,
+            "link": full, "source": "ЕРЗ.РФ", "image_url": "",
+        })
+    print(f"ЕРЗ.РФ (сайт): новых КРТ/ИЖС материалов: {len(items)}")
+    return items
+
+
 def collect_news(seen: set) -> list:
     """Читает все источники и возвращает список НОВЫХ новостей."""
     fresh = []
@@ -508,6 +550,10 @@ def collect_news(seen: set) -> list:
             fresh.append(tg)
             tg_count += 1
     print(f"Собрано новых постов из телеграм-каналов: {tg_count}")
+
+    # --- ЕРЗ.РФ напрямую (парсер сайта) ---
+    for it in collect_erz(seen):
+        fresh.append(it)
 
     # Отбор: релевантность (точность) + near-дедуп (похожие перепечатки одной новости).
     result = []

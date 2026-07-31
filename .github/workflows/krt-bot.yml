@@ -53,6 +53,10 @@ jobs:
           git add seen.json 2>/dev/null || true
           git add pending.json 2>/dev/null || true
           git add state.json 2>/dev/null || true
+          git add state.json 2>/dev/null || true
+          # Копилка материалов за неделю: из неё собираются дайджест
+          # и «Цифра недели». Без сохранения она обнуляется каждый запуск.
+          git add week.json 2>/dev/null || true
           echo "--- будет сохранено ---"
           git diff --cached --name-only
           if git commit -m "Обновление состояния бота [skip ci]"; then

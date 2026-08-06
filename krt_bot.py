@@ -1252,9 +1252,8 @@ def _photo_background(image_url: str):
     except Exception:
         return None
     bg = ImageOps.fit(bg, (COVER_W, COVER_H), Image.LANCZOS)      # заполнить кадр
-    # Лёгкий бирюзовый тон, чтобы фото попало в палитру ИПМ, но осталось видно.
-    # Было 0.62 — фотография превращалась в ровное бирюзовое пятно.
-    bg = Image.blend(bg, Image.new("RGB", (COVER_W, COVER_H), BRAND_TEAL), 0.28)
+    # затемняем фирменным бирюзовым, а не чёрным — фото попадает в палитру ИПМ
+    bg = Image.blend(bg, Image.new("RGB", (COVER_W, COVER_H), BRAND_TEAL), 0.62)
     return bg
 
 
@@ -1274,106 +1273,166 @@ def _wrap_lines(draw, text, font, max_w):
     return lines
 
 
-# --- ТИПОГРАФИКА И СЛОИ ОБЛОЖКИ ---------------------------------------------
-# Макет один для всех вариантов: фон → тёмная подложка снизу → надзаголовок →
-# заголовок слева над футером. Читается как обложка новостного материала и
-# одинаково работает и на фото, и на фирменном фоне.
-
-PAD_X = 64            # левое и правое поле
-TITLE_BOTTOM = 104    # отступ от низа до последней строки заголовка
-
-
-def _scrim(img: Image.Image, top_frac: float = 0.38, strength: int = 232) -> Image.Image:
-    """Линейная тёмная подложка снизу — заголовок читается на любом фоне.
-    Раньше вместо неё было размытое пятно-эллипс по центру: на фото оно оставляло
-    светлые углы, и белый текст местами пропадал."""
-    y0 = int(COVER_H * top_frac)
-    strip = Image.new("L", (1, COVER_H), 0)
-    for y in range(y0, COVER_H):
-        t = (y - y0) / max(1, COVER_H - y0)
-        strip.putpixel((0, y), int(strength * (t ** 1.5)))
-    alpha = strip.resize((COVER_W, COVER_H))
-    out = img.copy()
-    out.paste(Image.new("RGB", (COVER_W, COVER_H), BG_DARK), (0, 0), alpha)
-    return out
-
-
-def _vignette(img: Image.Image, strength: int = 96) -> Image.Image:
-    """Мягкое затемнение по краям — вместо бирюзового «свечения» по центру."""
-    mask = Image.new("L", (COVER_W, COVER_H), 0)
-    ImageDraw.Draw(mask).ellipse(
-        [-COVER_W * 0.22, -COVER_H * 0.30, COVER_W * 1.22, COVER_H * 1.30], fill=255)
-    mask = ImageOps.invert(mask).filter(ImageFilter.GaussianBlur(110))
-    mask = mask.point(lambda v: int(v * strength / 255))
-    out = img.copy()
-    out.paste(Image.new("RGB", (COVER_W, COVER_H), (0, 0, 0)), (0, 0), mask)
-    return out
-
-
-def _draw_marks(img: Image.Image, seed: int) -> Image.Image:
-    """Сдержанная фирменная графика: несколько тонких золотых линий в правом
-    верхнем углу. Заменяет прежние процедурные «дома» и «сетку кварталов» —
-    они выглядели как программная заглушка."""
-    _r = random.Random(seed)
-    overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(overlay)
-    x0 = COVER_W - _r.choice([210, 260, 310])
-    for i in range(_r.choice([3, 4, 5])):
-        off = i * _r.choice([18, 24, 30])
-        d.line([(x0 + off, 0), (x0 + off - 150, 150)],
-               fill=(ACCENT[0], ACCENT[1], ACCENT[2], 34), width=2)
-    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-
-
-def _draw_title(img: Image.Image, title: str, max_size: int = 60,
-                min_size: int = 32, max_lines: int = 4) -> int:
-    """Заголовок по левому краю, прижат к низу. Возвращает Y верхней строки —
-    по нему ставится надзаголовок. Тень не рисуем: за читаемость отвечает scrim,
-    а двойная отрисовка со сдвигом на 2 px выглядела дешёво."""
+def _draw_centered_title(img, title, top: float = 0.19, height: float = 0.62,
+                         max_size: int = 76):
+    """Пишет заголовок по центру заданной зоны, автоматически подбирая размер
+    шрифта. top/height — доли высоты обложки: где начинается зона и какая она.
+    Это нужно макетам, где сверху уже стоит крупная цифра или подпись региона."""
     draw = ImageDraw.Draw(img)
-    max_w = COVER_W - PAD_X * 2
-    size, lines = min_size, [title]
-    for size in range(max_size, min_size - 1, -3):
+    max_w = int(COVER_W * 0.86)
+    zone_h = COVER_H * height
+    for size in range(max_size, 26, -4):  # от крупного к мелкому, пока не влезет
         font = _font(size)
         lines = _wrap_lines(draw, title, font, max_w)
-        if len(lines) <= max_lines:
+        line_h = size + 14
+        total_h = line_h * len(lines)
+        if len(lines) <= 5 and total_h <= zone_h:
             break
-    font = _font(size)
-    line_h = int(size * 1.24)
-    top = COVER_H - TITLE_BOTTOM - line_h * len(lines)
-    y = top
+    y = int(COVER_H * top + (zone_h - total_h) / 2)   # центр внутри зоны
     for line in lines:
-        draw.text((PAD_X, y), line, font=font, fill=TITLE_COLOR)
+        w = draw.textlength(line, font=font)
+        x = (COVER_W - w) // 2            # горизонтальное центрирование
+        draw.text((x + 2, y + 2), line, font=font, fill=(0, 0, 0))  # тень
+        draw.text((x, y), line, font=font, fill=TITLE_COLOR)
         y += line_h
-    return top
-
-
-def _draw_kicker(img: Image.Image, text: str, y: int) -> None:
-    """Надзаголовок: короткая золотая черта и подпись капсом (регион, тема)."""
-    if not text:
-        return
-    d = ImageDraw.Draw(img)
-    d.rectangle([PAD_X, y + 9, PAD_X + 30, y + 12], fill=ACCENT)
-    d.text((PAD_X + 44, y), text.upper(), font=_font(21), fill=ACCENT)
 
 
 def _draw_footer(img, source=None):
-    """Снизу-слева — золотой маркер и белый бренд «IPM | LAB». Источник не пишем."""
-    d = ImageDraw.Draw(img)
-    d.rectangle([PAD_X, COVER_H - 52, PAD_X + 5, COVER_H - 36], fill=ACCENT)
-    d.text((PAD_X + 18, COVER_H - 55), "IPM | LAB", font=_font(24),
-           fill=(255, 255, 255))
+    """Снизу-слева — золотой маркер + белый бренд «IPM | LAB». Источник не пишем."""
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([44, COVER_H - 56, 51, COVER_H - 38], fill=ACCENT)   # золотой штрих
+    draw.text((62, COVER_H - 60), "IPM | LAB", font=_font(29), fill=(255, 255, 255))
+
+
+def _topic_of(title: str) -> str:
+    """Определяет тему поста по заголовку — для тематического силуэта на обложке."""
+    t = (title or "").lower()
+    if "ижс" in t or "индивидуальное жилищное" in t or "малоэтаж" in t or "загородн" in t:
+        return "izhs"
+    return "krt"
+
+
+def _draw_glow(img: Image.Image) -> Image.Image:
+    """Мягкое свечение за заголовком — придаёт фону глубину, 'ночной город'."""
+    overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    cx, cy = COVER_W // 2, int(COVER_H * 0.40)
+    d.ellipse([cx - 430, cy - 210, cx + 430, cy + 210], fill=(44, 104, 126, 80))  # бирюзовое свечение
+    overlay = overlay.filter(ImageFilter.GaussianBlur(130))
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+
+def _draw_theme(img: Image.Image, topic: str, seed: int = 0) -> Image.Image:
+    """Еле заметный фоновый силуэт застройки снизу — с глубиной (дальний и ближний
+    план) и тонкой золотой линией горизонта. Заголовок остаётся поверх и читается.
+
+    seed задаёт геометрию: у каждого поста свой силуэт. Без него (как было раньше)
+    сид считался от размера картинки и совпадал у всех постов."""
+    _r = random.Random(seed)
+    overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    base = COVER_H - 12
+    far = (255, 255, 255, 12)     # дальний план — почти не виден
+    near = (0, 0, 0, 46)          # ближний — тёмный силуэт на фоне
+
+    # дальний план (тонкие высокие силуэты)
+    x = -20
+    while x < COVER_W + 20:
+        w = _r.choice([44, 58, 72])
+        h = _r.choice([150, 200, 250])
+        d.rectangle([x, base - h, x + w, base], fill=far)
+        x += w + _r.choice([10, 16])
+
+    # ближний план
+    x = -30
+    while x < COVER_W + 30:
+        if topic == "izhs":
+            w = _r.choice([110, 140]); h = _r.choice([70, 95, 120]); roof = int(w * 0.42)
+            d.rectangle([x, base - h, x + w, base], fill=near)
+            d.polygon([(x - 10, base - h), (x + w + 10, base - h),
+                       (x + w / 2, base - h - roof)], fill=near)
+            x += w + _r.choice([34, 50])
+        else:
+            w = _r.choice([70, 92, 116]); h = _r.choice([120, 175, 235, 290])
+            d.rectangle([x, base - h, x + w, base], fill=near)
+            x += w + _r.choice([12, 18])
+
+    # тонкая золотая линия горизонта
+    d.rectangle([0, base - 2, COVER_W, base], fill=(ACCENT[0], ACCENT[1], ACCENT[2], 90))
+
+    out = Image.alpha_composite(img.convert("RGBA"), overlay)
+    return out.convert("RGB")
+
+
+def _draw_map_plan(img: Image.Image, seed: int, region: str = "") -> Image.Image:
+    """Схема-план территории: сетка кварталов с подсвеченным золотом участком.
+    Читается как карта/градплан и у каждого поста своя — геометрия от seed."""
+    _r = random.Random(seed)
+    overlay = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+
+    line = (255, 255, 255, 26)          # межквартальные проезды
+    plot = (255, 255, 255, 14)          # кварталы
+
+    # нерегулярная сетка кварталов
+    xs = [0]
+    while xs[-1] < COVER_W:
+        xs.append(xs[-1] + _r.choice([120, 155, 190, 225]))
+    ys = [0]
+    while ys[-1] < COVER_H:
+        ys.append(ys[-1] + _r.choice([95, 125, 160]))
+
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            pad = _r.choice([6, 10, 14])
+            d.rectangle([xs[i] + pad, ys[j] + pad, xs[i + 1] - pad, ys[j + 1] - pad],
+                        fill=plot)
+    for x in xs:
+        d.line([(x, 0), (x, COVER_H)], fill=line, width=2)
+    for y in ys:
+        d.line([(0, y), (COVER_W, y)], fill=line, width=2)
+
+    # один квартал — «наш» участок: золотой контур и заливка
+    i = _r.randrange(max(1, len(xs) - 1))
+    j = _r.randrange(max(1, len(ys) - 1))
+    box = [xs[i] + 10, ys[j] + 10, xs[min(i + 1, len(xs) - 1)] - 10,
+           ys[min(j + 1, len(ys) - 1)] - 10]
+    d.rectangle(box, fill=(ACCENT[0], ACCENT[1], ACCENT[2], 40),
+                outline=(ACCENT[0], ACCENT[1], ACCENT[2], 210), width=3)
+
+    # мягкая тёмная подложка по центру — чтобы заголовок читался поверх сетки
+    scrim = Image.new("RGBA", (COVER_W, COVER_H), (0, 0, 0, 0))
+    ImageDraw.Draw(scrim).ellipse(
+        [COVER_W // 2 - 480, int(COVER_H * 0.52) - 190,
+         COVER_W // 2 + 480, int(COVER_H * 0.52) + 190],
+        fill=(BG_DARK[0], BG_DARK[1], BG_DARK[2], 165))
+    overlay = Image.alpha_composite(overlay, scrim.filter(ImageFilter.GaussianBlur(60)))
+
+    out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+    # подпись региона — сверху слева, приглушённым цветом
+    if region:
+        dd = ImageDraw.Draw(out)
+        dd.text((46, 40), region.upper(), font=_font(26), fill=MUTED_COLOR)
+    return out
 
 
 def _draw_figure(img: Image.Image, figure: str) -> Image.Image:
-    """Ключевая цифра — крупно, золотом, по левому краю в верхней половине."""
+    """Инфографика: одна ключевая цифра крупно, золотом, по центру верхней части.
+    Под ней остаётся место для заголовка."""
     d = ImageDraw.Draw(img)
-    f = _font(120)
-    for size in range(120, 52, -6):
+    # подбираем размер так, чтобы цифра заняла до 80% ширины
+    for size in range(150, 60, -6):
         f = _font(size)
-        if d.textlength(figure, font=f) <= COVER_W - PAD_X * 2:
+        if d.textlength(figure, font=f) <= COVER_W * 0.8:
             break
-    d.text((PAD_X, int(COVER_H * 0.14)), figure, font=f, fill=ACCENT)
+    w = d.textlength(figure, font=f)
+    x, y = (COVER_W - w) // 2, int(COVER_H * 0.16)
+    d.text((x + 3, y + 3), figure, font=f, fill=(0, 0, 0))       # тень
+    d.text((x, y), figure, font=f, fill=ACCENT)                  # золото
+    # золотая черта под цифрой
+    d.rectangle([COVER_W // 2 - 70, y + size + 22, COVER_W // 2 + 70, y + size + 26],
+                fill=ACCENT)
     return img
 
 
@@ -1424,41 +1483,37 @@ def make_cover(title: str, source: str = "", variant: str = "auto",
                image_url: str = None, extra: dict = None) -> bytes:
     """Возвращает PNG-обложку (bytes).
 
-    variant: photo | figure | map | skyline (старое «design» = skyline).
-    extra:   данные для макета — {"figure": "340 га", "region": "Казань"}.
-
-    Макет одинаковый во всех вариантах — меняются фон и надзаголовок. Так лента
-    выглядит как единая серия, а не как набор разнородных картинок."""
+    variant: photo | figure | map | skyline (или устаревшее «design» = skyline).
+    extra:   данные для макета — {"figure": "340 га", "region": "Казань"}."""
     extra = extra or {}
     seed = _seed_of(title)
-    if variant in ("design", "auto"):
+    if variant == "design":                 # совместимость со старыми записями очереди
         variant = "skyline"
 
-    img = None
     if variant == "photo":
         img = _photo_background(image_url) if image_url else None
-        if img is None:
-            variant = "skyline"           # фото не скачалось — фирменный фон
-
-    if img is None:
+        if img is None:                     # фото не скачалось — уходим на силуэт
+            variant = "skyline"
+    if variant != "photo":
         img = _gradient(BG_TOP, BG_DARK)
-        img = _vignette(img)
-        img = _draw_marks(img, seed)
+        img = _draw_glow(img)
 
-    img = _scrim(img)
-    ImageDraw.Draw(img).rectangle([0, 0, COVER_W, 3], fill=ACCENT)  # золотая линия сверху
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, COVER_W, 4], fill=ACCENT)      # золотая линия сверху — во всех макетах
 
-    kicker = ""
-    if variant == "figure" and extra.get("figure"):
-        img = _draw_figure(img, extra["figure"])
-    elif variant == "map":
-        kicker = extra.get("region", "") or "Территория"
+    if variant == "map":
+        img = _draw_map_plan(img, seed, extra.get("region", ""))
+        _draw_centered_title(img, title, top=0.30, height=0.46)
+    elif variant == "figure":
+        img = _draw_figure(img, extra.get("figure", ""))
+        _draw_centered_title(img, title, top=0.58, height=0.28, max_size=46)
+    elif variant == "photo":
+        _draw_centered_title(img, title)
+    else:                                              # skyline
+        img = _draw_theme(img, _topic_of(title), seed)
+        _draw_centered_title(img, title)
 
-    top = _draw_title(img, title)
-    if kicker:
-        _draw_kicker(img, kicker, y=top - 42)
     _draw_footer(img, source)
-
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()

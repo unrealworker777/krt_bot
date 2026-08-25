@@ -1,11 +1,11 @@
 {
   "offset": 903844504,
-  "post_seq": 166,
+  "post_seq": 168,
   "recent_layouts": [
-    "skyline",
-    "photo"
+    "photo",
+    "skyline"
   ],
-  "rubric_done": "2026-08-24:figure",
-  "faq_i": 2,
+  "rubric_done": "2026-08-25:faq",
+  "faq_i": 3,
   "checklist_i": 2
 }

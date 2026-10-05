@@ -5020,5 +5020,36 @@
     },
     "poll": null,
     "group": "3ff79ac510bc110a"
+  },
+  "1072": {
+    "text": "📊 <b>ЦИФРА НЕДЕЛИ</b>\n\nНа Южном Урале предусмотрено строительство жилья общей площадью <b>5,5 млн квадратных метров</b> посредством реализации проектов комплексного развития территорий. Данный объём отражает масштабный инвестиционный план регионального развития и демонстрирует растущее значение механизма КРТ как инструмента освоения территорий. Для застройщиков это означает значительный спрос на жилищную продукцию и расширение инвестиционных возможностей. Для инвесторов проект представляет долгосрочный потенциал капиталовложений в условиях системной поддержки федеральными и региональными органами власти. Реализация проекта предполагает координированное взаимодействие между участниками рынка и органами управления в соответствии с установленными механизмами КРТ.\n\n📎 Источник: <b>Дзен</b> (news.google.com) — <a href=\"https://news.google.com/rss/articles/CBMicEFVX3lxTFBpczdLOVdsdkpJdHlDeXVuVjZCbHh6RlBHMkhlV3BLeUszUG9YRU5FME45ZzNCUmNNaDdVLTFiOUc1ZFJJZUs5YzVNVWdhVFhjdDRUSzV4SmFFeDJOcUdNRkd5Q3g3OFpMcUlfbzdJUlA?oc=5\">читать оригинал</a>",
+    "title": "5,5 млн кв. м",
+    "source": "ИПМ",
+    "image_url": "",
+    "layout": "figure",
+    "extra": {
+      "figure": "5,5 млн кв. м"
+    },
+    "poll": {
+      "question": "Какой объём жилищного строительства через КРТ реален на Южном Урале?",
+      "options": [
+        "5,5 млн кв. м — оптимистичный сценарий",
+        "2–3 млн кв. м — более вероятный результат",
+        "Менее 1 млн кв. м — существуют риски"
+      ]
+    },
+    "group": "rubric_figure_202640"
+  },
+  "1073": {
+    "text": "📍 <b>Рублёво-Архангельская линия обслужила 850 тыс. поездок за месяц работы</b>\n\n<b>850 тыс. поездок</b> совершено на новой ветке московского метро с момента запуска месяц назад. Линия охватила пять районов города с населением свыше 550 тыс. жителей и сократила время проезда до центра в три раза.\n\nРазвитие транспортной инфраструктуры улучшает инвестиционную привлекательность прилегающих территорий. Самые загруженные станции — «Бульвар Генерала Карбышева», «Деловой центр» и «Звенигородская» — демонстрируют высокий спрос на мобильность в этих локациях (свыше 34 тыс. поездок в рабочие дни).\n\nДля девелопера это означает возможность пересмотра экономики жилых и смешанных проектов в прилегающих районах: появление прямого сообщения с центром и пересадками на три линии метро и МЦК повышает стоимость квадратного метра и скорость продаж. Строительство второго участка до станции «Новорижская» с завершением в 2025 году расширит зону позитивного влияния инфраструктуры, создав новые точки роста для земельных площадок в данном коридоре.\n\n📎 Источник: <b>Telegram @stroi_mos_ru</b> (t.me) — <a href=\"https://t.me/stroi_mos_ru/27243\">читать оригинал</a>",
+    "title": "За первый месяц работы на Рублёво-Архангельской линии совершили свыше 850 тыс. поездок",
+    "source": "Telegram @stroi_mos_ru",
+    "image_url": "https://cdn4.telesco.pe/file/WwP3Btv84V5R6wHIxP4VGizzgpQw_vTdug4dvDmHSEzLPr1oyZzHOmkxhHb9_pIwoY-Ez7ytwrDvAyaaBmImYiEdXDGj9HNwi4D45H56FiKakXT_GSNVF0a0U6oaX_iXLb_6S_qiqMgEu4TDFD_4T5-FTootjsOVEqic-zXf_mmJ-5swIUNsdc_3fa0VAuLK3okispdVsXS0oGp1gHkfj7kn2gjtR6gfZZXuD8MTxibVFIb9ejTya6KFv9nGtg-NOxLkQhGeUPFeLemLUnzlMTTcfw9SIMjKe_YL5qrvoCZdxd7FpFh0oF0BH4_Ug1SxrZT_93jrjLGHCIHiZrxl8w",
+    "layout": "photo",
+    "extra": {
+      "image_url": "https://cdn4.telesco.pe/file/WwP3Btv84V5R6wHIxP4VGizzgpQw_vTdug4dvDmHSEzLPr1oyZzHOmkxhHb9_pIwoY-Ez7ytwrDvAyaaBmImYiEdXDGj9HNwi4D45H56FiKakXT_GSNVF0a0U6oaX_iXLb_6S_qiqMgEu4TDFD_4T5-FTootjsOVEqic-zXf_mmJ-5swIUNsdc_3fa0VAuLK3okispdVsXS0oGp1gHkfj7kn2gjtR6gfZZXuD8MTxibVFIb9ejTya6KFv9nGtg-NOxLkQhGeUPFeLemLUnzlMTTcfw9SIMjKe_YL5qrvoCZdxd7FpFh0oF0BH4_Ug1SxrZT_93jrjLGHCIHiZrxl8w"
+    },
+    "poll": null,
+    "group": "99e2ef506b3d5411"
   }
 }
